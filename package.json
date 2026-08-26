@@ -1,0 +1,50 @@
+{
+  "name": "bb-plugin-auggie",
+  "version": "0.1.0",
+  "description": "Adds Augment Code's Auggie CLI to bb as an ACP coding-agent provider.",
+  "type": "module",
+  "keywords": [
+    "bb",
+    "bb-plugin",
+    "acp",
+    "coding-agent",
+    "auggie"
+  ],
+  "homepage": "https://github.com/ai-ecoverse/bb-auggie#readme",
+  "bugs": {
+    "url": "https://github.com/ai-ecoverse/bb-auggie/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-ecoverse/bb-auggie.git"
+  },
+  "engines": {
+    "bb": ">=0.39",
+    "bbPluginSdk": ">=0.4.8"
+  },
+  "bb": {
+    "name": "Auggie",
+    "description": "Adds Augment Code's Auggie CLI to bb as an ACP coding-agent provider.",
+    "branding": {
+      "icon": "./assets/logo.svg"
+    },
+    "server": "./server.ts",
+    "skills": []
+  },
+  "scripts": {
+    "build": "bb plugin build .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.8",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.0"
+  }
+}

@@ -6,7 +6,7 @@ After installation, **Auggie** appears in bb as provider **`acp-auggie`**.
 
 ## Prerequisites
 
-- bb 0.39 or newer with its built-in ACP providers plugin enabled.
+- bb 0.40 or newer with its built-in ACP providers plugin enabled.
 - Install with `npm install -g @augmentcode/auggie`, then authenticate with `auggie login`.
 
 ## Install
@@ -26,9 +26,9 @@ npm run build
 bb plugin install .
 ```
 
-The plugin locates the CLI, writes or repairs its managed `customAcpAgents`
-entry without disturbing other agents, installs the approved monochrome icon,
-and reloads bb's configuration. It uses `auggie --acp` over stdio.
+The plugin locates the CLI and writes or repairs its managed entry in the ACP
+providers plugin's `customAgents` setting without disturbing other agents. It
+uses `auggie --acp` over stdio. Model ids come from Auggie's ACP session catalog.
 
 ## Check or repair
 
@@ -56,11 +56,13 @@ for installations made before this repository became a bb plugin.
 ## How it works
 
 bb's built-in ACP provider supplies the ACP-to-bb runtime. This plugin manages
-the provider-specific launch profile and branding in bb's data-directory
-configuration. Authentication and model availability remain owned by the
+the provider-specific launch profile in that plugin's `customAgents` setting
+(the old `customAcpAgents` array in `config.json` is deprecated in bb 0.40 and
+removed in 0.41). Authentication and model availability remain owned by the
 vendor CLI and the user's account.
 
-The package ID is `auggie`; the provider ID is `acp-auggie`.
+The package ID is `auggie`; the provider ID is `acp-auggie`. The compact icon
+is a `currentColor` mask so it follows the bb theme.
 
 ## Development
 
@@ -69,4 +71,4 @@ npm run typecheck
 npm run build
 ```
 
-The plugin requires bb 0.39+ and plugin SDK 0.4.8+.
+The plugin requires bb 0.40+ and plugin SDK 0.4.8+.

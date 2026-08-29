@@ -5,9 +5,10 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
     "types": ["node"],
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["server.ts"]
+  "include": ["server.ts", "app.tsx"]
 }

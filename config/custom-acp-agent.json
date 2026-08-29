@@ -3,18 +3,5 @@
   "displayName": "Auggie",
   "command": "auggie",
   "args": ["--acp"],
-  "env": {},
-  "modelCli": {
-    "selectFlag": "--model",
-    "primaryModels": [
-      "prism-a",
-      "opus5",
-      "sonnet5-high",
-      "fable-5",
-      "opus4.8",
-      "sonnet4.6",
-      "haiku4.5",
-      "code-review"
-    ]
-  }
+  "env": {}
 }

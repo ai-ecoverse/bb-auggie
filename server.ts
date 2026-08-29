@@ -3,7 +3,6 @@ import {
   accessSync,
   chmodSync,
   constants,
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -12,28 +11,20 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { delimiter, dirname, join } from "node:path";
 
+const ACP_PLUGIN_ID = "provider-acp";
 const PROFILE = {
   id: "auggie",
   providerId: "acp-auggie",
   displayName: "Auggie",
   binary: "auggie",
   args: ["--acp"],
-  modelCli: {
-    selectFlag: "--model",
-    primaryModels: ["prism-a","opus5","sonnet5-high","fable-5","opus4.8","sonnet4.6","haiku4.5","code-review"],
-  },
   installHint: "Install Auggie with `npm install -g @augmentcode/auggie`, authenticate it, then run `bb plugin reload auggie`.",
 } as const;
 
 type JsonObject = Record<string, unknown>;
 type CustomAgent = JsonObject & { id?: unknown; command?: unknown; env?: unknown };
-
-const moduleDir = dirname(fileURLToPath(import.meta.url));
-const pluginRoot = basename(moduleDir) === "dist" ? dirname(moduleDir) : moduleDir;
-const logoSource = join(pluginRoot, "assets", "logo.svg");
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -92,58 +83,59 @@ function writeAtomic(path: string, value: JsonObject): void {
   }
 }
 
-function installLogo(dataDir: string): { path: string; changed: boolean } {
-  const destination = join(dataDir, "logos", `${PROFILE.id}.svg`);
-  mkdirSync(dirname(destination), { recursive: true });
-  const changed = !existsSync(destination)
-    || !readFileSync(destination).equals(readFileSync(logoSource));
-  if (changed) copyFileSync(logoSource, destination);
-  return { path: destination, changed };
+function parseCustomAgents(value: unknown): CustomAgent[] {
+  if (value === undefined || value === null || value === "") return [];
+  if (typeof value !== "string") {
+    throw new Error(`${ACP_PLUGIN_ID} customAgents must be a string`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return [];
+  const parsed: unknown = JSON.parse(trimmed);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${ACP_PLUGIN_ID} customAgents must be a JSON array; refusing to overwrite it`);
+  }
+  return parsed as CustomAgent[];
 }
 
-function provision(dataDir: string): { changed: boolean; binary: string } {
-  const configPath = join(dataDir, "config.json");
-  const config = readConfig(configPath);
-  const agents = Array.isArray(config.customAcpAgents)
-    ? [...config.customAcpAgents] as CustomAgent[]
-    : [];
-  const index = agents.findIndex((agent) => agent?.id === PROFILE.id);
-  const current = index >= 0 ? agents[index] : undefined;
-  const binary = findBinary(current);
-  if (binary === null) throw new Error(`${PROFILE.binary} was not found. ${PROFILE.installHint}`);
+function stringifyCustomAgents(agents: CustomAgent[]): string {
+  return `${JSON.stringify(agents, null, 2)}\n`;
+}
 
-  const existingEnv = isObject(current?.env) ? current.env : {};
-  const managed: CustomAgent = {
-    ...current,
+function managedAgent(binary: string, existing?: CustomAgent): CustomAgent {
+  const existingEnv = isObject(existing?.env) ? existing.env : {};
+  return {
     id: PROFILE.id,
     displayName: PROFILE.displayName,
     command: binary,
     args: [...PROFILE.args],
     env: existingEnv,
-    logo: `logos/${PROFILE.id}.svg`,
-    modelCli: {
-      selectFlag: PROFILE.modelCli.selectFlag,
-      primaryModels: [...PROFILE.modelCli.primaryModels],
-    },
   };
-  const before = JSON.stringify(agents);
-  if (index >= 0) agents[index] = managed;
-  else agents.push(managed);
-  const configChanged = JSON.stringify(agents) !== before;
-  const logo = installLogo(dataDir);
-  if (configChanged) {
-    config.customAcpAgents = agents;
-    writeAtomic(configPath, config);
-  }
-  return { changed: configChanged || logo.changed, binary };
 }
 
-function unregister(dataDir: string): boolean {
+function upsertAgent(agents: CustomAgent[], next: CustomAgent): { agents: CustomAgent[]; changed: boolean } {
+  const index = agents.findIndex((agent) => agent?.id === PROFILE.id);
+  const before = JSON.stringify(index >= 0 ? agents[index] : null);
+  const copy = [...agents];
+  if (index >= 0) copy[index] = next;
+  else copy.push(next);
+  return { agents: copy, changed: JSON.stringify(index >= 0 ? copy[index] : copy.at(-1)) !== before };
+}
+
+function removeAgent(agents: CustomAgent[]): { agents: CustomAgent[]; changed: boolean } {
+  const next = agents.filter((agent) => agent?.id !== PROFILE.id);
+  return { agents: next, changed: next.length !== agents.length };
+}
+
+function readLegacyAgents(dataDir: string): CustomAgent[] {
+  const config = readConfig(join(dataDir, "config.json"));
+  return Array.isArray(config.customAcpAgents) ? [...config.customAcpAgents] as CustomAgent[] : [];
+}
+
+function writeLegacyAgents(dataDir: string, agents: CustomAgent[]): boolean {
   const configPath = join(dataDir, "config.json");
   const config = readConfig(configPath);
-  if (!Array.isArray(config.customAcpAgents)) return false;
-  const agents = (config.customAcpAgents as CustomAgent[]).filter((agent) => agent?.id !== PROFILE.id);
-  if (agents.length === config.customAcpAgents.length) return false;
+  const current = Array.isArray(config.customAcpAgents) ? config.customAcpAgents as CustomAgent[] : [];
+  if (JSON.stringify(current) === JSON.stringify(agents)) return false;
   if (agents.length === 0) delete config.customAcpAgents;
   else config.customAcpAgents = agents;
   writeAtomic(configPath, config);
@@ -161,20 +153,83 @@ export default function plugin(bb: BbPluginApi) {
     return process.env.BB_DATA_DIR ?? join(homedir(), ".bb");
   }
 
-  async function reloadConfig(): Promise<void> {
-    await bb.sdk.system.reloadConfig();
+  async function readSettingAgents(): Promise<CustomAgent[] | null> {
+    try {
+      const settings = await bb.sdk.plugins.getSettings({ pluginId: ACP_PLUGIN_ID });
+      return parseCustomAgents(settings.values.customAgents);
+    } catch (error) {
+      bb.log.warn(`Could not read ${ACP_PLUGIN_ID} customAgents: ${String(error)}`);
+      return null;
+    }
   }
 
-  async function repair(): Promise<{ changed: boolean; binary: string }> {
-    const result = provision(await dataDir());
-    if (result.changed) await reloadConfig();
-    return result;
+  async function writeSettingAgents(agents: CustomAgent[]): Promise<boolean> {
+    const serialized = agents.length === 0 ? "" : stringifyCustomAgents(agents);
+    await bb.sdk.plugins.updateSettings({
+      pluginId: ACP_PLUGIN_ID,
+      values: { customAgents: serialized },
+    });
+    return true;
+  }
+
+  async function provision(): Promise<{ changed: boolean; binary: string }> {
+    const root = await dataDir();
+    const settingAgents = await readSettingAgents();
+    const legacyAgents = readLegacyAgents(root);
+    const existing = settingAgents?.find((agent) => agent?.id === PROFILE.id)
+      ?? legacyAgents.find((agent) => agent?.id === PROFILE.id);
+    const binary = findBinary(existing);
+    if (binary === null) throw new Error(`${PROFILE.binary} was not found. ${PROFILE.installHint}`);
+
+    const managed = managedAgent(binary, existing);
+    let changed = false;
+
+    if (settingAgents !== null) {
+      const next = upsertAgent(settingAgents, managed);
+      if (next.changed) {
+        await writeSettingAgents(next.agents);
+        changed = true;
+      }
+    } else {
+      const next = upsertAgent(legacyAgents, managed);
+      if (next.changed && writeLegacyAgents(root, next.agents)) {
+        await bb.sdk.system.reloadConfig();
+        changed = true;
+      }
+      return { changed, binary };
+    }
+
+    const stripped = removeAgent(legacyAgents);
+    if (stripped.changed && writeLegacyAgents(root, stripped.agents)) {
+      await bb.sdk.system.reloadConfig();
+      changed = true;
+    }
+    return { changed, binary };
+  }
+
+  async function unregister(): Promise<boolean> {
+    const root = await dataDir();
+    let changed = false;
+    const settingAgents = await readSettingAgents();
+    if (settingAgents !== null) {
+      const next = removeAgent(settingAgents);
+      if (next.changed) {
+        await writeSettingAgents(next.agents);
+        changed = true;
+      }
+    }
+    const stripped = removeAgent(readLegacyAgents(root));
+    if (stripped.changed && writeLegacyAgents(root, stripped.agents)) {
+      await bb.sdk.system.reloadConfig();
+      changed = true;
+    }
+    return changed;
   }
 
   bb.background.service("provision", {
     async start() {
       try {
-        const result = await repair();
+        const result = await provision();
         bb.log.info(
           result.changed
             ? `registered ${PROFILE.providerId} with ${result.binary}`
@@ -200,7 +255,7 @@ export default function plugin(bb: BbPluginApi) {
       const command = argv[0] ?? "status";
       if (command === "repair") {
         try {
-          const result = await repair();
+          const result = await provision();
           return { exitCode: 0, stdout: `${PROFILE.providerId}: ${result.changed ? "repaired" : "already up to date"}\nCLI: ${result.binary}\n` };
         } catch (error) {
           return { exitCode: 1, stderr: `${String(error)}\n` };
@@ -208,8 +263,7 @@ export default function plugin(bb: BbPluginApi) {
       }
       if (command === "unregister") {
         try {
-          const changed = unregister(await dataDir());
-          if (changed) await reloadConfig();
+          const changed = await unregister();
           return { exitCode: 0, stdout: `${PROFILE.providerId}: ${changed ? "unregistered" : "not configured"}\n` };
         } catch (error) {
           return { exitCode: 1, stderr: `${String(error)}\n` };
@@ -217,19 +271,23 @@ export default function plugin(bb: BbPluginApi) {
       }
       if (command === "status") {
         const root = await dataDir();
-        const config = readConfig(join(root, "config.json"));
-        const agents = Array.isArray(config.customAcpAgents) ? config.customAcpAgents as CustomAgent[] : [];
-        const entry = agents.find((agent) => agent?.id === PROFILE.id);
+        const settingAgents = await readSettingAgents();
+        const legacyAgents = readLegacyAgents(root);
+        const entry = settingAgents?.find((agent) => agent?.id === PROFILE.id)
+          ?? legacyAgents.find((agent) => agent?.id === PROFILE.id);
         const binary = findBinary(entry);
         let registered = false;
         try {
           registered = (await bb.sdk.providers.list()).some((provider) => provider.id === PROFILE.providerId);
         } catch {}
+        const setting = settingAgents?.some((agent) => agent?.id === PROFILE.id) ? "present" : "missing";
+        const legacy = legacyAgents.some((agent) => agent?.id === PROFILE.id) ? "present" : "absent";
         return {
           exitCode: binary && entry && registered ? 0 : 1,
           stdout: [
             `CLI: ${binary ?? "NOT FOUND"}`,
-            `config entry: ${entry ? "present" : "missing"}`,
+            `ACP customAgents entry: ${setting}`,
+            `legacy config.json entry: ${legacy}`,
             `bb provider ${PROFILE.providerId}: ${registered ? "registered" : "NOT registered"}`,
           ].join("\n") + "\n",
         };

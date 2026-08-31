@@ -1,7 +1,8 @@
 {
   "name": "bb-plugin-auggie",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Adds Augment Code's Auggie CLI to bb as an ACP coding-agent provider.",
+  "license": "MIT",
   "type": "module",
   "keywords": [
     "bb",
@@ -34,6 +35,7 @@
   },
   "scripts": {
     "build": "bb plugin build .",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -62,6 +64,7 @@
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0",
-    "vaul": "^1.1.2"
+    "vaul": "^1.1.2",
+    "vitest": "4.1.11"
   }
 }

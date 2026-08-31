@@ -19,6 +19,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+
+// src/agent-entry.ts
 var ACP_PLUGIN_ID = "provider-acp";
 var PROFILE = {
   id: "auggie",
@@ -26,11 +28,89 @@ var PROFILE = {
   displayName: "Auggie",
   binary: "auggie",
   args: ["--acp"],
+  // Directories Auggie actually reads (`docs.augmentcode.com/cli/skills` and
+  // the CLI's own `[".augment", ".claude", ".agents"]` + `"skills"` scan).
+  // User roots resolve from the home directory, project roots from the workspace.
+  nativeSkillRoots: {
+    user: [".augment/skills", ".claude/skills", ".agents/skills"],
+    project: [".augment/skills", ".claude/skills", ".agents/skills"]
+  },
+  // bb's permission modes as Auggie `--permission tool:policy` flags. There is
+  // no allow-everything switch (`--allow-all` is rejected). Accept-edits maps
+  // to auto-approving Auggie's file-mutation tools; shell still asks. bb's
+  // default "auto" mode adds nothing, so every request comes through ACP.
+  permissionCli: {
+    workspaceWrite: [
+      "--permission=write:allow",
+      "--permission=edit:allow",
+      "--permission=apply_patch:allow",
+      "--permission=remove-files:allow"
+    ]
+  },
   installHint: "Install Auggie with `npm install -g @augmentcode/auggie`, authenticate it, then run `bb plugin reload auggie`."
 };
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function isOwnAgent(agent) {
+  return agent?.id === PROFILE.id;
+}
+function findOwnAgent(agents) {
+  return agents.find(isOwnAgent);
+}
+function parseCustomAgents(value) {
+  if (value === void 0 || value === null || value === "") return [];
+  if (typeof value !== "string") {
+    throw new Error(`${ACP_PLUGIN_ID} customAgents must be a string`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return [];
+  const parsed = JSON.parse(trimmed);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${ACP_PLUGIN_ID} customAgents must be a JSON array; refusing to overwrite it`);
+  }
+  return parsed;
+}
+function stringifyCustomAgents(agents) {
+  return `${JSON.stringify(agents, null, 2)}
+`;
+}
+function managedAgent(binary, existing) {
+  const existingEnv = isObject(existing?.env) ? existing.env : {};
+  return {
+    // Keys the user added themselves (cwd, dialect, modelCli, ...) survive a
+    // reload; the fields below are ours and are rewritten every time.
+    ...existing ?? {},
+    id: PROFILE.id,
+    displayName: PROFILE.displayName,
+    command: binary,
+    args: [...PROFILE.args],
+    env: existingEnv,
+    nativeSkillRoots: {
+      user: [...PROFILE.nativeSkillRoots.user],
+      project: [...PROFILE.nativeSkillRoots.project]
+    },
+    permissionCli: {
+      workspaceWrite: [...PROFILE.permissionCli.workspaceWrite]
+    }
+  };
+}
+function upsertAgent(agents, next) {
+  const index = agents.findIndex(isOwnAgent);
+  const before = JSON.stringify(index >= 0 ? agents[index] : null);
+  const copy = [...agents];
+  if (index >= 0) copy[index] = next;
+  else copy.push(next);
+  return { agents: copy, changed: JSON.stringify(index >= 0 ? copy[index] : copy.at(-1)) !== before };
+}
+function removeAgent(agents) {
+  const next = agents.filter((agent) => !isOwnAgent(agent));
+  return { agents: next, changed: next.length !== agents.length };
+}
+
+// server.ts
+var SETTINGS_READY_ATTEMPTS = 10;
+var SETTINGS_READY_DELAY_MS = 500;
 function isExecutable(path) {
   try {
     accessSync(path, constants.X_OK);
@@ -69,7 +149,7 @@ function readConfig(configPath) {
 }
 function writeAtomic(path, value) {
   mkdirSync(dirname(path), { recursive: true });
-  const temporary = `${path}.auggie.${process.pid}.tmp`;
+  const temporary = `${path}.${PROFILE.id}.${process.pid}.tmp`;
   try {
     writeFileSync(temporary, `${JSON.stringify(value, null, 2)}
 `, { encoding: "utf8", mode: 384 });
@@ -78,45 +158,6 @@ function writeAtomic(path, value) {
   } finally {
     rmSync(temporary, { force: true });
   }
-}
-function parseCustomAgents(value) {
-  if (value === void 0 || value === null || value === "") return [];
-  if (typeof value !== "string") {
-    throw new Error(`${ACP_PLUGIN_ID} customAgents must be a string`);
-  }
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return [];
-  const parsed = JSON.parse(trimmed);
-  if (!Array.isArray(parsed)) {
-    throw new Error(`${ACP_PLUGIN_ID} customAgents must be a JSON array; refusing to overwrite it`);
-  }
-  return parsed;
-}
-function stringifyCustomAgents(agents) {
-  return `${JSON.stringify(agents, null, 2)}
-`;
-}
-function managedAgent(binary, existing) {
-  const existingEnv = isObject(existing?.env) ? existing.env : {};
-  return {
-    id: PROFILE.id,
-    displayName: PROFILE.displayName,
-    command: binary,
-    args: [...PROFILE.args],
-    env: existingEnv
-  };
-}
-function upsertAgent(agents, next) {
-  const index = agents.findIndex((agent) => agent?.id === PROFILE.id);
-  const before = JSON.stringify(index >= 0 ? agents[index] : null);
-  const copy = [...agents];
-  if (index >= 0) copy[index] = next;
-  else copy.push(next);
-  return { agents: copy, changed: JSON.stringify(index >= 0 ? copy[index] : copy.at(-1)) !== before };
-}
-function removeAgent(agents) {
-  const next = agents.filter((agent) => agent?.id !== PROFILE.id);
-  return { agents: next, changed: next.length !== agents.length };
 }
 function readLegacyAgents(dataDir) {
   const config = readConfig(join(dataDir, "config.json"));
@@ -151,6 +192,14 @@ function plugin(bb) {
       return null;
     }
   }
+  async function readSettingAgentsWhenReady() {
+    for (let attempt = 0; attempt < SETTINGS_READY_ATTEMPTS; attempt += 1) {
+      const agents = await readSettingAgents();
+      if (agents !== null) return agents;
+      await new Promise((resolve) => setTimeout(resolve, SETTINGS_READY_DELAY_MS));
+    }
+    return readSettingAgents();
+  }
   async function writeSettingAgents(agents) {
     const serialized = agents.length === 0 ? "" : stringifyCustomAgents(agents);
     await bb.sdk.plugins.updateSettings({
@@ -159,11 +208,11 @@ function plugin(bb) {
     });
     return true;
   }
-  async function provision() {
+  async function provision(waitForSettings = false) {
     const root = await dataDir();
-    const settingAgents = await readSettingAgents();
+    const settingAgents = waitForSettings ? await readSettingAgentsWhenReady() : await readSettingAgents();
     const legacyAgents = readLegacyAgents(root);
-    const existing = settingAgents?.find((agent) => agent?.id === PROFILE.id) ?? legacyAgents.find((agent) => agent?.id === PROFILE.id);
+    const existing = (settingAgents === null ? void 0 : findOwnAgent(settingAgents)) ?? findOwnAgent(legacyAgents);
     const binary = findBinary(existing);
     if (binary === null) throw new Error(`${PROFILE.binary} was not found. ${PROFILE.installHint}`);
     const managed = managedAgent(binary, existing);
@@ -210,7 +259,7 @@ function plugin(bb) {
   bb.background.service("provision", {
     async start() {
       try {
-        const result = await provision();
+        const result = await provision(true);
         bb.log.info(
           result.changed ? `registered ${PROFILE.providerId} with ${result.binary}` : `${PROFILE.providerId} is already configured`
         );
@@ -256,15 +305,15 @@ CLI: ${result.binary}
         const root = await dataDir();
         const settingAgents = await readSettingAgents();
         const legacyAgents = readLegacyAgents(root);
-        const entry = settingAgents?.find((agent) => agent?.id === PROFILE.id) ?? legacyAgents.find((agent) => agent?.id === PROFILE.id);
+        const entry = (settingAgents === null ? void 0 : findOwnAgent(settingAgents)) ?? findOwnAgent(legacyAgents);
         const binary = findBinary(entry);
         let registered = false;
         try {
           registered = (await bb.sdk.providers.list()).some((provider) => provider.id === PROFILE.providerId);
         } catch {
         }
-        const setting = settingAgents?.some((agent) => agent?.id === PROFILE.id) ? "present" : "missing";
-        const legacy = legacyAgents.some((agent) => agent?.id === PROFILE.id) ? "present" : "absent";
+        const setting = settingAgents?.some(isOwnAgent) ? "present" : "missing";
+        const legacy = legacyAgents.some(isOwnAgent) ? "present" : "absent";
         return {
           exitCode: binary && entry && registered ? 0 : 1,
           stdout: [

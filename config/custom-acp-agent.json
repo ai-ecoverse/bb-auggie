@@ -3,5 +3,17 @@
   "displayName": "Auggie",
   "command": "auggie",
   "args": ["--acp"],
-  "env": {}
+  "env": {},
+  "nativeSkillRoots": {
+    "user": [".augment/skills", ".claude/skills", ".agents/skills"],
+    "project": [".augment/skills", ".claude/skills", ".agents/skills"]
+  },
+  "permissionCli": {
+    "workspaceWrite": [
+      "--permission=write:allow",
+      "--permission=edit:allow",
+      "--permission=apply_patch:allow",
+      "--permission=remove-files:allow"
+    ]
+  }
 }

@@ -23,12 +23,33 @@ For local development:
 npm install
 npm run typecheck
 npm run build
+npm test
 bb plugin install .
 ```
 
 The plugin locates the CLI and writes or repairs its managed entry in the ACP
 providers plugin's `customAgents` setting without disturbing other agents. It
 uses `auggie --acp` over stdio. Model ids come from Auggie's ACP session catalog.
+
+## Skills
+
+The managed entry declares the skill directories the Auggie CLI reads, so bb
+lists them in the composer next to its own:
+
+- project: `.augment/skills/`, `.claude/skills/`, `.agents/skills/`
+- user: `~/.augment/skills/`, `~/.claude/skills/`, `~/.agents/skills/`
+
+## Permission modes
+
+bb's thread permission mode becomes an Auggie `--permission` launch flag.
+Auggie has no allow-everything switch (`--allow-all` is rejected), so Full
+access is omitted and behaves like Auto.
+
+| bb mode      | Auggie flags |
+| ------------ | ------------ |
+| Auto         | none — every tool call comes through ACP for approval |
+| Accept edits | `--permission=write:allow --permission=edit:allow --permission=apply_patch:allow --permission=remove-files:allow` — file mutations run unattended, shell still asks |
+| Full access  | none — Auggie has no honest equivalent |
 
 ## Check or repair
 
@@ -50,8 +71,11 @@ bb auggie unregister
 bb plugin remove auggie
 ```
 
-The legacy `scripts/install.sh` and `scripts/uninstall.sh` remain available
-for installations made before this repository became a bb plugin.
+The legacy `scripts/install.sh` and `scripts/uninstall.sh` remain available for
+installations made before this repository became a bb plugin. Do not use them
+for new installs: they write the `customAcpAgents` array that bb removes in
+0.41. Installing the plugin migrates such an entry to the setting and deletes
+the legacy one.
 
 ## How it works
 
@@ -69,6 +93,7 @@ is a `currentColor` mask so it follows the bb theme.
 ```bash
 npm run typecheck
 npm run build
+npm test
 ```
 
 The plugin requires bb 0.40+ and plugin SDK 0.4.8+.

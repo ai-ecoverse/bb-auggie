@@ -16,5 +16,9 @@ function AuggieIcon({ className }: { className?: string }) {
 }
 
 export default definePluginApp((app) => {
-  app.slots.experimental_providerIcon({ providerId: "acp-auggie", icon: AuggieIcon });
+  app.slots.experimental_providerIcon({
+    providerKind: "agent",
+    providerId: "acp-auggie",
+    icon: AuggieIcon,
+  });
 });
